@@ -40,7 +40,7 @@ verification step in this repo is code, not a screenshot.
   deployed API and verify the actual response body, not just an HTTP
   status code.
 - **Real debugging, not a clean first try** — see
-  [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full chronological log of
+  [`docs/RUNBOOK.md`](lab11a/lab11adocumentation.md) for the full chronological log of
   seven distinct root causes hit and resolved during deployment, each
   isolated with an actual diagnostic step before being fixed.
 
