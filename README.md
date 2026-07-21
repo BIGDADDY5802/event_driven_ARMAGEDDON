@@ -231,7 +231,7 @@ terraform destroy
 
 - [`docs/RUNBOOK.md`](lab11a/lab11adocumentation.md) — full deployment chronology: every
   failure hit, its root cause, and the fix, in order
-- [`docs/gate-evidence-redacted.md`](docs/gate-evidence-redacted.md) —
+- [`docs/gate-evidence-redacted.md`](lab11a/2026.7.20actions.txt) —
   final gate JSON output, redacted for public sharing
 - [`docs/workflow-redacted.md`](lab11a/lab11a.txt) — the complete
   redacted command/output log behind this build
