@@ -1,0 +1,535 @@
+# Lab 11A — Deployment Workflow
+
+Sensitive values (account ID, ARNs, passwords, VPC/subnet/SG/instance IDs,
+SSH host key fingerprints, internal IPs, request/command IDs) have been
+replaced with placeholders. Structure, commands, and error messages are
+otherwise unmodified.
+
+---
+
+## Initial apply
+
+```
+Apply complete! Resources: 6 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+api_id                   = "<API_ID>"
+db_endpoint              = "<DB_ENDPOINT>"
+db_instance_id           = "<DB_RESOURCE_ID>"
+db_secret_arn            = <sensitive>
+invoke_url               = "https://<API_ID>.execute-api.us-east-1.amazonaws.com/prod/intake"
+lambda_function_name     = "chewbacca-intake-lambda-11a"
+lambda_security_group_id = "<LAMBDA_SG_ID>"
+rds_security_group_id    = "<RDS_SG_ID>"
+```
+
+## Fixed `db_instance_id` output (was mapped to internal resource ID, not identifier)
+
+```
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+api_id                   = "<API_ID>"
+db_endpoint              = "<DB_ENDPOINT>"
+db_instance_id           = "chewbacca-11a-mysql"
+db_secret_arn            = <sensitive>
+invoke_url               = "https://<API_ID>.execute-api.us-east-1.amazonaws.com/prod/intake"
+lambda_function_name     = "chewbacca-intake-lambda-11a"
+lambda_security_group_id = "<LAMBDA_SG_ID>"
+rds_security_group_id    = "<RDS_SG_ID>"
+```
+
+## Pulling the DB password from Secrets Manager
+
+```bash
+MSYS_NO_PATHCONV=1 aws secretsmanager get-secret-value \
+  --secret-id "$(terraform output -raw db_secret_arn)" \
+  --query SecretString --output text | python -c "import sys,json; print(json.load(sys.stdin)['password'])"
+```
+
+First attempt — failed because the command was run from the home
+directory instead of `terraform/`, so `terraform output` returned empty:
+
+```
+aws: [ERROR]: An error occurred (ParamValidation): Parameter validation failed:
+Invalid length for parameter SecretId, value: 0, valid min length: 1
+Traceback (most recent call last):
+  ...
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+Fix: run from inside `terraform/`. Second attempt succeeded:
+
+```
+<DB_PASSWORD_REDACTED>
+```
+
+## Added `subnet_ids` output
+
+```
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+api_id                   = "<API_ID>"
+db_endpoint              = "<DB_ENDPOINT>"
+db_instance_id           = "chewbacca-11a-mysql"
+db_secret_arn            = <sensitive>
+invoke_url               = "https://<API_ID>.execute-api.us-east-1.amazonaws.com/prod/intake"
+lambda_function_name     = "chewbacca-intake-lambda-11a"
+lambda_security_group_id = "<LAMBDA_SG_ID>"
+rds_security_group_id    = "<RDS_SG_ID>"
+subnet_ids = tolist([
+  "<SUBNET_ID_1>",
+  "<SUBNET_ID_2>",
+])
+```
+
+## Bastion IAM teardown commands
+
+```bash
+aws iam remove-role-from-instance-profile --instance-profile-name chewbacca-11a-bastion-profile --role-name chewbacca-11a-bastion-role
+aws iam delete-instance-profile --instance-profile-name chewbacca-11a-bastion-profile
+aws iam detach-role-policy --role-name chewbacca-11a-bastion-role --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+aws iam delete-role --role-name chewbacca-11a-bastion-role
+```
+
+---
+
+## `bootstrap_schema.sh` — attempt 1 (SSM parameter path guess failed)
+
+```
+../scripts/bootstrap_schema.sh
+[bootstrap_schema] Secret ARN:   <SECRET_ARN>
+[bootstrap_schema] DB endpoint:  <DB_ENDPOINT>
+[bootstrap_schema] Lambda SG:    <LAMBDA_SG_ID>
+[bootstrap_schema] Subnet:       <SUBNET_ID_1>
+[bootstrap_schema] Fetching DB password from Secrets Manager...
+[bootstrap_schema] Password retrieved (not printed).
+[bootstrap_schema] Creating IAM role chewbacca-11a-bastion-role...
+[bootstrap_schema] Creating instance profile chewbacca-11a-bastion-profile...
+[bootstrap_schema] Waiting for IAM propagation...
+
+aws: [ERROR]: An error occurred (ParameterNotFound) when calling the GetParameter operation:
+```
+
+Fix: replaced the guessed SSM Parameter Store path with `aws ec2
+describe-images` sorted by `CreationDate`.
+
+## `bootstrap_schema.sh` — attempt 2 (SSM agent never registered)
+
+```
+../scripts/bootstrap_schema.sh
+[bootstrap_schema] Secret ARN:   <SECRET_ARN>
+[bootstrap_schema] DB endpoint:  <DB_ENDPOINT>
+[bootstrap_schema] Lambda SG:    <LAMBDA_SG_ID>
+[bootstrap_schema] Subnet:       <SUBNET_ID_1>
+[bootstrap_schema] Fetching DB password from Secrets Manager...
+[bootstrap_schema] Password retrieved (not printed).
+[bootstrap_schema] IAM role chewbacca-11a-bastion-role already exists, reusing it.
+[bootstrap_schema] Instance profile chewbacca-11a-bastion-profile already exists, reusing it.
+[bootstrap_schema] Using AMI: <AMI_ID>
+[bootstrap_schema] Launching bastion instance...
+[bootstrap_schema] Instance launched: <INSTANCE_ID>
+[bootstrap_schema] Waiting for instance status checks to pass (this can take a minute or two)...
+[bootstrap_schema] Waiting for SSM agent to register (up to ~2 minutes)...
+[bootstrap_schema] ERROR: SSM agent never came online on <INSTANCE_ID>. Check outbound internet/route table on <SUBNET_ID_1>.
+[bootstrap_schema] Terminating bastion <INSTANCE_ID>...
+```
+
+### Diagnostics — ruling out networking layer by layer
+
+```bash
+aws ec2 describe-subnets --subnet-ids <SUBNET_ID_1> \
+  --query "Subnets[0].[MapPublicIpOnLaunch,VpcId]" --output text
+```
+```
+True    <VPC_ID>
+```
+
+```bash
+aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=<SUBNET_ID_1>" \
+  --query "RouteTables[0].Routes"
+
+aws ec2 describe-vpc-attribute --vpc-id <VPC_ID> --attribute enableDnsSupport --query "EnableDnsSupport.Value"
+aws ec2 describe-vpc-attribute --vpc-id <VPC_ID> --attribute enableDnsHostnames --query "EnableDnsHostnames.Value"
+```
+```
+null
+true
+true
+```
+
+`null` meant no *explicit* route table association — the subnet falls
+back to the VPC's main route table:
+
+```bash
+aws ec2 describe-route-tables --filters "Name=vpc-id,Values=<VPC_ID>" "Name=association.main,Values=true" \
+  --query "RouteTables[0].Routes"
+```
+```json
+[
+    {
+        "DestinationCidrBlock": "172.31.0.0/16",
+        "GatewayId": "local",
+        "Origin": "CreateRouteTable",
+        "State": "active"
+    },
+    {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": "<IGW_ID>",
+        "Origin": "CreateRoute",
+        "State": "active"
+    }
+]
+```
+Routing and DNS both confirmed clean.
+
+## `bootstrap_schema.sh` — attempt 3 (extended wait + auto-diagnostics)
+
+```
+../scripts/bootstrap_schema.sh
+[bootstrap_schema] Secret ARN:   <SECRET_ARN>
+[bootstrap_schema] DB endpoint:  <DB_ENDPOINT>
+[bootstrap_schema] Lambda SG:    <LAMBDA_SG_ID>
+[bootstrap_schema] Subnet:       <SUBNET_ID_3>
+[bootstrap_schema] Fetching DB password from Secrets Manager...
+[bootstrap_schema] Password retrieved (not printed).
+[bootstrap_schema] IAM role chewbacca-11a-bastion-role already exists, reusing it.
+[bootstrap_schema] Instance profile chewbacca-11a-bastion-profile already exists, reusing it.
+[bootstrap_schema] Using AMI: <AMI_ID>
+[bootstrap_schema] Launching bastion instance...
+[bootstrap_schema] Instance launched: <INSTANCE_ID>
+[bootstrap_schema] Waiting for instance status checks to pass (this can take a minute or two)...
+[bootstrap_schema] Waiting for SSM agent to register (up to ~6 minutes)...
+[bootstrap_schema] SSM agent never came online. Pulling diagnostics before teardown...
+[bootstrap_schema] --- IAM instance-profile association state ---
+associated      arn:aws:iam::<ACCOUNT_ID>:instance-profile/chewbacca-11a-bastion-profile
+
+[bootstrap_schema] --- Instance console output (tail) ---
+[cloud-init boot log — SSH host key generation, fingerprints, and console
+banner redacted; contained no actionable diagnostic information for this
+issue, since SSM Agent logs live in /var/log/amazon/ssm/ on the instance
+and never reach the serial console]
+
+Amazon Linux 2023.12.20260720
+Kernel <REDACTED> on an x86_64 (-)
+
+[bootstrap_schema] ERROR: SSM agent never came online on <INSTANCE_ID>. Check outbound internet/route table on <SUBNET_ID_3> and the diagnostics above.
+[bootstrap_schema] Terminating bastion <INSTANCE_ID>...
+```
+
+IAM instance-profile association confirmed `associated` — ruled out.
+Console output ruled out as a useful signal for this specific failure.
+
+### Root cause found
+
+```bash
+aws ec2 describe-images --image-ids <AMI_ID> --query "Images[0].Name" --output text
+```
+```
+al2023-ami-minimal-2023.12.20260720.0-kernel-6.18-x86_64
+```
+
+Routing, DNS, security group, IAM association, and NACL were all clean.
+The `minimal` AL2023 variant ships without the SSM Agent preinstalled —
+that's the actual cause. Fixed by tightening the AMI filter to
+`al2023-ami-2*-kernel-*-x86_64`, which excludes `minimal` and `ecs`
+variants.
+
+## `bootstrap_schema.sh` — attempt 4 (success)
+
+```
+../scripts/bootstrap_schema.sh
+[bootstrap_schema] Secret ARN:   <SECRET_ARN>
+[bootstrap_schema] DB endpoint:  <DB_ENDPOINT>
+[bootstrap_schema] Lambda SG:    <LAMBDA_SG_ID>
+[bootstrap_schema] Subnet:       <SUBNET_ID_3>
+[bootstrap_schema] Fetching DB password from Secrets Manager...
+[bootstrap_schema] Password retrieved (not printed).
+[bootstrap_schema] IAM role chewbacca-11a-bastion-role already exists, reusing it.
+[bootstrap_schema] Instance profile chewbacca-11a-bastion-profile already exists, reusing it.
+[bootstrap_schema] Using AMI: <AMI_ID> (al2023-ami-2023.12.20260720.0-kernel-6.1-x86_64)
+[bootstrap_schema] Launching bastion instance...
+[bootstrap_schema] Instance launched: <INSTANCE_ID>
+[bootstrap_schema] Waiting for instance status checks to pass (this can take a minute or two)...
+[bootstrap_schema] Waiting for SSM agent to register (up to ~6 minutes)...
+[bootstrap_schema] SSM agent online.
+[bootstrap_schema] Sending schema apply command over SSM...
+[bootstrap_schema] Command ID: <COMMAND_ID> — waiting for completion...
+--- remote stdout ---
+SCHEMA_APPLY_OK
+--- remote stderr ---
+
+[bootstrap_schema] Schema applied successfully.
+[bootstrap_schema] Terminating bastion <INSTANCE_ID>...
+```
+
+## Bastion role teardown
+
+```
+../scripts/teardown_bastion_role.sh
+This will delete:
+  - IAM instance profile: chewbacca-11a-bastion-profile
+  - IAM role:             chewbacca-11a-bastion-role
+  - Detach policy:        arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+Proceed? [y/N] y
+[teardown_bastion_role] Removing role from instance profile chewbacca-11a-bastion-profile...
+[teardown_bastion_role] Deleting instance profile chewbacca-11a-bastion-profile...
+[teardown_bastion_role] Detaching arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore from chewbacca-11a-bastion-role...
+[teardown_bastion_role] Deleting role chewbacca-11a-bastion-role...
+[teardown_bastion_role] Done.
+```
+
+## Secrets Manager immediate-deletion preference
+
+```hcl
+resource "aws_secretsmanager_secret" "db_secret" {
+  name                    = "${var.project_name}-db-secret"
+  description             = "MySQL connection info for the Lab 11A intake Lambda"
+  recovery_window_in_days = 0
+}
+```
+
+---
+
+## Gate run — first attempt (API invoke failure + rollup script bug)
+
+```bash
+export REGION=us-east-1
+export LAMBDA_NAME=$(terraform -chdir=../terraform output -raw lambda_function_name)
+export SECRET_ARN=$(terraform -chdir=../terraform output -raw db_secret_arn)
+export DB_NAME=lab11
+export DB_ID=$(terraform -chdir=../terraform output -raw db_instance_id)
+export RDS_SG_ID=$(terraform -chdir=../terraform output -raw rds_security_group_id)
+export LAMBDA_SG_ID=$(terraform -chdir=../terraform output -raw lambda_security_group_id)
+export API_ID=$(terraform -chdir=../terraform output -raw api_id)
+export STAGE_NAME=prod
+../scripts/run_all_gates_11a.sh
+```
+```
+Gate 11A Lambda/Secret/VPC: PASS
+Gate 11A RDS/SG/Private: PASS
+Gate 11A API route/invoke: FAIL
+jq: error (at gate_11a_apigw_route_invoke.json:19): null (null) cannot be parsed as a number
+Lab 11A Gate complete: RED (FAIL)
+```
+
+Two separate issues: a real gate failure, and a rollup-script bug
+(`jq` referenced unexported env vars — fixed with explicit `--arg`/
+`--argjson` flags).
+
+```bash
+cat gate_11a_apigw_route_invoke.json
+```
+```json
+{
+  "schema_version": "1.0",
+  "gate": "11a_apigw_route_invoke",
+  "timestamp_utc": "2026-07-21T05:25:07Z",
+  "region": "us-east-1",
+  "inputs": {
+    "api_id": "<API_ID>",
+    "stage": "prod",
+    "route_key": "POST /intake"
+  },
+  "observed": { "url": "https://<API_ID>.execute-api.us-east-1.amazonaws.com/prod/intake", "http_code": "500" },
+  "status": "FAIL",
+  "exit_code": 2,
+  "details": ["PASS: API exists (API_ID=<API_ID>).\nPASS: Route exists (POST /intake).\nPASS: Stage exists (prod).\nINFO: Response body saved at /tmp/chewbacca_gate_11a_resp.json"],
+  "warnings": [],
+  "failures": ["FAIL: API invoke did not return 200 (http_code=500)."]
+}
+```
+
+500, not 502 — pointed to an unhandled exception rather than the Lambda's
+own controlled `DB_WRITE_FAILED` path.
+
+```bash
+MSYS_NO_PATHCONV=1 aws logs tail "/aws/lambda/chewbacca-intake-lambda-11a" --since 30m --region us-east-1
+```
+```
+<timestamp> <log stream> INIT_START Runtime Version: python:3.12...
+<timestamp> <log stream> START RequestId: <REQUEST_ID> Version: $LATEST
+<timestamp> <log stream> END RequestId: <REQUEST_ID>
+<timestamp> <log stream> REPORT RequestId: <REQUEST_ID>    Duration: 10000.00 ms   Billed Duration: 10453 ms       Memory Size: 256 MB     Max Memory Used: 92 MB  Init Duration: 452.02 ms        Status: timeout
+```
+
+Timeout at exactly the 10-second ceiling, zero exception logged.
+
+### Root cause
+
+Lambda ENIs never receive public IP addresses, even in a subnet with an
+Internet Gateway route. With no NAT Gateway and no VPC endpoint, the
+VPC-attached Lambda had no path to the public Secrets Manager endpoint —
+`GetSecretValue` hung until Lambda's own timeout killed it.
+
+### Fix — VPC Interface Endpoint for Secrets Manager
+
+```hcl
+resource "aws_security_group" "secretsmanager_endpoint_sg" {
+  name        = "${var.project_name}-secretsmanager-endpoint-sg"
+  description = "Allows the Lambda SG to reach the Secrets Manager VPC endpoint on 443"
+  vpc_id      = data.aws_vpc.default.id
+
+  tags = {
+    Name = "${var.project_name}-secretsmanager-endpoint-sg"
+  }
+}
+
+resource "aws_security_group_rule" "endpoint_ingress_from_lambda" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.secretsmanager_endpoint_sg.id
+  source_security_group_id = aws_security_group.lambda_sg.id
+  description               = "Allow HTTPS from the Lambda SG only"
+}
+
+resource "aws_vpc_endpoint" "secretsmanager" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.${var.aws_region}.secretsmanager"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = local.selected_subnet_ids
+  security_group_ids  = [aws_security_group.secretsmanager_endpoint_sg.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project_name}-secretsmanager-endpoint"
+  }
+}
+```
+
+```hcl
+depends_on = [
+    aws_iam_role_policy_attachment.lambda_basic_execution,
+    aws_iam_role_policy_attachment.lambda_vpc_access,
+    aws_iam_role_policy.lambda_read_secret,
+    aws_cloudwatch_log_group.lambda,
+    aws_vpc_endpoint.secretsmanager,
+  ]
+```
+
+## Final verification
+
+```bash
+../scripts/gate_11a_apigw_route_invoke.sh
+```
+```
+Gate 11A API route/invoke: PASS
+```
+
+```bash
+../scripts/run_all_gates_11a.sh
+```
+```
+Gate 11A Lambda/Secret/VPC: PASS
+Gate 11A RDS/SG/Private: PASS
+Gate 11A API route/invoke: PASS
+Lab 11A Gate complete: GREEN (PASS)
+```
+
+# Lab 11A — Final Gate Evidence
+
+```json
+{
+  "schema_version": "1.0",
+  "gate": "11a_apigw_route_invoke",
+  "timestamp_utc": "2026-07-21T05:45:33Z",
+  "region": "us-east-1",
+  "inputs": {
+    "api_id": "<API_ID>",
+    "stage": "prod",
+    "route_key": "POST /intake"
+  },
+  "observed": { "url": "https://<API_ID>.execute-api.us-east-1.amazonaws.com/prod/intake", "http_code": "200" },
+  "status": "PASS",
+  "exit_code": 0,
+  "details": [
+"PASS: API exists (API_ID=<API_ID>).\nPASS: Route exists (POST /intake).\nPASS: Stage exists (prod).\nPASS: API invoke returned HTTP 200.\nPASS: Response body contains ok=true."],
+  "warnings": [],
+  "failures": []
+}
+```
+
+```json
+{
+  "schema_version": "1.0",
+  "gate": "11a_lambda_secret_vpc",
+  "timestamp_utc": "2026-07-21T05:45:16Z",
+  "region": "us-east-1",
+  "inputs": {
+    "lambda_name": "chewbacca-intake-lambda-11a",
+    "secret_arn": "arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:chewbacca-11a-db-secret-<SECRET_SUFFIX>",
+    "db_name": "lab11"
+  },
+  "status": "PASS",
+  "exit_code": 0,
+  "details": [
+"PASS: Lambda exists (chewbacca-intake-lambda-11a).\nPASS: Lambda runtime is Python (python3.12).\nPASS: Lambda handler set (lambda_function.lambda_handler).\nPASS: Lambda is VPC-attached (subnets + SG present).\nPASS: Lambda env DB_SECRET_ARN matches expected.\nPASS: Lambda env DB_NAME matches expected.\nPASS: Secret exists (arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:chewbacca-11a-db-secret-<SECRET_SUFFIX>)."],
+  "warnings": [],
+  "failures": []
+}
+```
+
+```json
+{
+  "schema_version": "1.0",
+  "gate": "11a_rds_sg_private",
+  "timestamp_utc": "2026-07-21T05:45:26Z",
+  "region": "us-east-1",
+  "inputs": {
+    "db_id": "chewbacca-11a-mysql",
+    "rds_sg_id": "<RDS_SG_ID>",
+    "lambda_sg_id": "<LAMBDA_SG_ID>"
+  },
+  "observed": { "endpoint": "chewbacca-11a-mysql.<RDS_ENDPOINT_ID>.us-east-1.rds.amazonaws.com", "public": "False" },
+  "status": "PASS",
+  "exit_code": 0,
+  "details": [
+"PASS: RDS PubliclyAccessible=False.\nPASS: RDS endpoint present.\nPASS: RDS SG allows 3306 from Lambda SG.\nPASS: RDS SG not world-open on 3306."],
+  "warnings": [],
+  "failures": []
+}
+```
+
+```json
+{
+  "schema_version": "2.0",
+  "gate": "11a_all_gates",
+  "timestamp_utc": "2026-07-21T05:45:34Z",
+  "region": "us-east-1",
+  "badge": "GREEN",
+  "status": "PASS",
+  "exit_code": 0,
+  "child_gates": [
+    {
+      "name": "lambda_secret_vpc",
+      "file": "gate_11a_lambda_secret_vpc.json",
+      "exit_code": 0
+    },
+    {
+      "name": "rds_sg_private",
+      "file": "gate_11a_rds_sg_private.json",
+      "exit_code": 0
+    },
+    {
+      "name": "apigw_route_invoke",
+      "file": "gate_11a_apigw_route_invoke.json",
+      "exit_code": 0
+    }
+  ],
+  "rollup": {
+    "failures": [],
+    "warnings": []
+  }
+}
+```
+
+---
+
+**Lab 11A: done.**

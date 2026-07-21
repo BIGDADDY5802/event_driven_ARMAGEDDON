@@ -1,0 +1,1240 @@
+# lab_11a_execute.txt
+
+REGION=us-east-1 \
+LAMBDA_NAME=chewbacca-intake-lambda-11a \
+SECRET_ARN=arn:aws:secretsmanager:us-east-1:200819971986:secret:chewbacca-db-secret-11a-xxxxx \
+DB_NAME=lab11 \
+DB_ID=chewbacca-mysql-11a \
+RDS_SG_ID=sg-xxxxxxxx \
+LAMBDA_SG_ID=sg-yyyyyyyy \
+API_ID=abc123xyz \
+STAGE_NAME=prod \
+./run_all_gates_11a.sh
+
+
+
+
+Artifacts produced:
+
+badge.txt
+gate_result.json
+pr_comment.md
+individual gate JSON files
+
+
+```bash
+# gate_11_a_apigatewat_route_invoke.sh
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGION="${REGION:-us-east-1}"
+API_ID="${API_ID:-}"
+STAGE_NAME="${STAGE_NAME:-prod}"
+ROUTE_PATH="${ROUTE_PATH:-/intake}"
+METHOD="${METHOD:-POST}"
+
+OUT_JSON="${OUT_JSON:-gate_11a_apigw_route_invoke.json}"
+
+failures=(); warnings=(); details=()
+add_failure(){ failures+=("$1"); }
+add_warning(){ warnings+=("$1"); }
+add_detail(){ details+=("$1"); }
+
+json_escape(){ sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'; }
+make_json_array() {
+  if (( $# == 0 )); then echo "[]"; return; fi
+  printf '%s\n' "$@" | json_escape | awk 'BEGIN{print "["} {printf "%s\"%s\"", (NR>1?",":""), $0} END{print "]"}'
+}
+
+usage(){
+  cat <<EOF
+Required:
+  REGION
+  API_ID
+Optional:
+  STAGE_NAME (default: prod)
+
+Example:
+  REGION=us-east-1 API_ID=abc123 STAGE_NAME=prod ./gate_11a_apigw_route_invoke.sh
+EOF
+}
+
+if [[ -z "$API_ID" ]]; then
+  echo "ERROR: API_ID required." >&2
+  usage >&2
+  exit 1
+fi
+
+# API exists
+if aws apigatewayv2 get-api --api-id "$API_ID" --region "$REGION" >/dev/null 2>&1; then
+  add_detail "PASS: API exists (API_ID=$API_ID)."
+else
+  add_failure "FAIL: API not found or not accessible (API_ID=$API_ID)."
+fi
+
+# Route exists
+route_key="${METHOD} ${ROUTE_PATH}"
+found="$(aws apigatewayv2 get-routes --api-id "$API_ID" --region "$REGION" \
+  --query "Items[?RouteKey=='$route_key'].RouteId" --output text 2>/dev/null || echo "")"
+
+[[ -n "$found" && "$found" != "None" ]] \
+  && add_detail "PASS: Route exists ($route_key)." \
+  || add_failure "FAIL: Route missing ($route_key)."
+
+# Stage exists
+stage_found="$(aws apigatewayv2 get-stages --api-id "$API_ID" --region "$REGION" \
+  --query "Items[?StageName=='$STAGE_NAME'].StageName" --output text 2>/dev/null || echo "")"
+[[ "$stage_found" == "$STAGE_NAME" ]] && add_detail "PASS: Stage exists ($STAGE_NAME)." || add_failure "FAIL: Stage missing ($STAGE_NAME)."
+
+# Invoke test
+url="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}${ROUTE_PATH}"
+
+#Chewbacca: If this fails, your wiring is wrong. Good. Fix it with evidence.
+payload='{"actor":"doctor.ny","action":"VIEW_PATIENT","resource":"patient/12345","note":"gate-test"}'
+http_code="$(curl -sS -o /tmp/chewbacca_gate_11a_resp.json -w "%{http_code}" \
+  -X "$METHOD" "$url" -H "content-type: application/json" -d "$payload" || echo "000")"
+
+if [[ "$http_code" == "200" ]]; then
+  add_detail "PASS: API invoke returned HTTP 200."
+  if grep -q '"ok": *true' /tmp/chewbacca_gate_11a_resp.json; then
+    add_detail "PASS: Response body contains ok=true."
+  else
+    add_warning "WARN: Response missing ok=true (check response schema)."
+  fi
+else
+  add_failure "FAIL: API invoke did not return 200 (http_code=$http_code)."
+  add_detail "INFO: Response body saved at /tmp/chewbacca_gate_11a_resp.json"
+fi
+
+status="PASS"; exit_code=0
+(( ${#failures[@]} > 0 )) && status="FAIL" && exit_code=2
+
+details_json="$(make_json_array "${details[@]}")"
+warnings_json="$(make_json_array "${warnings[@]}")"
+failures_json="$(make_json_array "${failures[@]}")"
+
+cat > "$OUT_JSON" <<EOF
+{
+  "schema_version": "1.0",
+  "gate": "11a_apigw_route_invoke",
+  "timestamp_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "region": "$(echo "$REGION" | json_escape)",
+  "inputs": {
+    "api_id": "$(echo "$API_ID" | json_escape)",
+    "stage": "$(echo "$STAGE_NAME" | json_escape)",
+    "route_key": "$(echo "$route_key" | json_escape)"
+  },
+  "observed": { "url": "$(echo "$url" | json_escape)", "http_code": "$(echo "$http_code" | json_escape)" },
+  "status": "$status",
+  "exit_code": $exit_code,
+  "details": $details_json,
+  "warnings": $warnings_json,
+  "failures": $failures_json
+}
+EOF
+
+echo "Gate 11A API route/invoke: $status"
+exit "$exit_code"
+```
+
+```bash
+# gate_11a_lambda_secret_vpc.sh
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+#Chewbacca: If variables are missing, the Wookiee does not guess.
+REGION="${REGION:-us-east-1}"
+LAMBDA_NAME="${LAMBDA_NAME:-}"
+SECRET_ARN="${SECRET_ARN:-}"
+DB_NAME="${DB_NAME:-}"
+
+OUT_JSON="${OUT_JSON:-gate_11a_lambda_secret_vpc.json}"
+
+failures=(); warnings=(); details=()
+add_failure(){ failures+=("$1"); }
+add_warning(){ warnings+=("$1"); }
+add_detail(){ details+=("$1"); }
+
+json_escape(){ sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'; }
+make_json_array() {
+  if (( $# == 0 )); then echo "[]"; return; fi
+  printf '%s\n' "$@" | json_escape | awk 'BEGIN{print "["} {printf "%s\"%s\"", (NR>1?",":""), $0} END{print "]"}'
+}
+
+usage(){
+  cat <<EOF
+Required:
+  REGION
+  LAMBDA_NAME
+  SECRET_ARN
+  DB_NAME
+
+Example:
+  REGION=us-east-1 LAMBDA_NAME=chewbacca-intake-lambda-11a SECRET_ARN=arn:aws:secretsmanager:... DB_NAME=lab11 ./gate_11a_lambda_secret_vpc.sh
+EOF
+}
+
+if [[ -z "$LAMBDA_NAME" || -z "$SECRET_ARN" || -z "$DB_NAME" ]]; then
+  echo "ERROR: missing required env vars." >&2
+  usage >&2
+  exit 1
+fi
+
+# 1) Lambda exists
+cfg="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" 2>/dev/null || true)"
+if [[ -z "$cfg" ]]; then
+  add_failure "FAIL: Lambda not found or not accessible ($LAMBDA_NAME)."
+else
+  add_detail "PASS: Lambda exists ($LAMBDA_NAME)."
+fi
+
+runtime="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" --query Runtime --output text 2>/dev/null || echo "")"
+handler="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" --query Handler --output text 2>/dev/null || echo "")"
+[[ "$runtime" == python* ]] && add_detail "PASS: Lambda runtime is Python ($runtime)." || add_warning "WARN: Lambda runtime is not Python ($runtime)."
+[[ -n "$handler" ]] && add_detail "PASS: Lambda handler set ($handler)." || add_failure "FAIL: Lambda handler missing."
+
+# 2) Lambda VPC config present
+subnets="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" --query "VpcConfig.SubnetIds" --output text 2>/dev/null || echo "")"
+sgs="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" --query "VpcConfig.SecurityGroupIds" --output text 2>/dev/null || echo "")"
+
+if [[ -n "$subnets" && "$subnets" != "None" && -n "$sgs" && "$sgs" != "None" ]]; then
+  add_detail "PASS: Lambda is VPC-attached (subnets + SG present)."
+else
+  add_failure "FAIL: Lambda is not VPC-attached (VpcConfig missing subnets/SG)."
+fi
+
+# 3) Environment variables include secret + DB name
+env_secret="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" --query "Environment.Variables.DB_SECRET_ARN" --output text 2>/dev/null || echo "")"
+env_dbname="$(aws lambda get-function-configuration --function-name "$LAMBDA_NAME" --region "$REGION" --query "Environment.Variables.DB_NAME" --output text 2>/dev/null || echo "")"
+
+[[ "$env_secret" == "$SECRET_ARN" ]] && add_detail "PASS: Lambda env DB_SECRET_ARN matches expected." || add_failure "FAIL: Lambda env DB_SECRET_ARN mismatch (expected=$SECRET_ARN actual=$env_secret)."
+[[ "$env_dbname" == "$DB_NAME" ]] && add_detail "PASS: Lambda env DB_NAME matches expected." || add_failure "FAIL: Lambda env DB_NAME mismatch (expected=$DB_NAME actual=$env_dbname)."
+
+# 4) Secret exists
+if aws secretsmanager describe-secret --secret-id "$SECRET_ARN" --region "$REGION" >/dev/null 2>&1; then
+  add_detail "PASS: Secret exists ($SECRET_ARN)."
+else
+  add_failure "FAIL: Secret not found or not accessible ($SECRET_ARN)."
+fi
+
+# Summarize
+status="PASS"; exit_code=0
+(( ${#failures[@]} > 0 )) && status="FAIL" && exit_code=2
+
+details_json="$(make_json_array "${details[@]}")"
+warnings_json="$(make_json_array "${warnings[@]}")"
+failures_json="$(make_json_array "${failures[@]}")"
+
+cat > "$OUT_JSON" <<EOF
+{
+  "schema_version": "1.0",
+  "gate": "11a_lambda_secret_vpc",
+  "timestamp_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "region": "$(echo "$REGION" | json_escape)",
+  "inputs": {
+    "lambda_name": "$(echo "$LAMBDA_NAME" | json_escape)",
+    "secret_arn": "$(echo "$SECRET_ARN" | json_escape)",
+    "db_name": "$(echo "$DB_NAME" | json_escape)"
+  },
+  "status": "$status",
+  "exit_code": $exit_code,
+  "details": $details_json,
+  "warnings": $warnings_json,
+  "failures": $failures_json
+}
+EOF
+
+echo "Gate 11A Lambda/Secret/VPC: $status"
+exit "$exit_code"
+```
+
+```bash
+# gate_11a_rds_sg_private.sh
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGION="${REGION:-us-east-1}"
+DB_ID="${DB_ID:-}"
+RDS_SG_ID="${RDS_SG_ID:-}"
+LAMBDA_SG_ID="${LAMBDA_SG_ID:-}"
+
+OUT_JSON="${OUT_JSON:-gate_11a_rds_sg_private.json}"
+
+failures=(); warnings=(); details=()
+add_failure(){ failures+=("$1"); }
+add_warning(){ warnings+=("$1"); }
+add_detail(){ details+=("$1"); }
+
+json_escape(){ sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'; }
+make_json_array() {
+  if (( $# == 0 )); then echo "[]"; return; fi
+  printf '%s\n' "$@" | json_escape | awk 'BEGIN{print "["} {printf "%s\"%s\"", (NR>1?",":""), $0} END{print "]"}'
+}
+
+usage(){
+  cat <<EOF
+Required:
+  REGION
+  DB_ID
+  RDS_SG_ID
+  LAMBDA_SG_ID
+
+Example:
+  REGION=us-east-1 DB_ID=chewbacca-mysql-11a RDS_SG_ID=sg-... LAMBDA_SG_ID=sg-... ./gate_11a_rds_sg_private.sh
+EOF
+}
+
+if [[ -z "$DB_ID" || -z "$RDS_SG_ID" || -z "$LAMBDA_SG_ID" ]]; then
+  echo "ERROR: missing required env vars." >&2
+  usage >&2
+  exit 1
+fi
+
+#Chewbacca: Databases do not belong on the public internet. Ever.
+pub="$(aws rds describe-db-instances --db-instance-identifier "$DB_ID" --region "$REGION" \
+  --query "DBInstances[0].PubliclyAccessible" --output text 2>/dev/null || echo "Unknown")"
+
+if [[ "$pub" == "False" ]]; then
+  add_detail "PASS: RDS PubliclyAccessible=False."
+else
+  add_failure "FAIL: RDS is public or unknown (PubliclyAccessible=$pub)."
+fi
+
+endpoint="$(aws rds describe-db-instances --db-instance-identifier "$DB_ID" --region "$REGION" \
+  --query "DBInstances[0].Endpoint.Address" --output text 2>/dev/null || echo "")"
+[[ -n "$endpoint" && "$endpoint" != "None" ]] && add_detail "PASS: RDS endpoint present." || add_failure "FAIL: RDS endpoint missing."
+
+# SG rule: 3306 from Lambda SG
+pairs="$(aws ec2 describe-security-groups --group-ids "$RDS_SG_ID" --region "$REGION" \
+  --query "SecurityGroups[0].IpPermissions[?FromPort==\`3306\` && ToPort==\`3306\`].UserIdGroupPairs[].GroupId" \
+  --output text 2>/dev/null || echo "")"
+
+echo "$pairs" | tr '\t' '\n' | grep -q "^${LAMBDA_SG_ID}$" \
+  && add_detail "PASS: RDS SG allows 3306 from Lambda SG." \
+  || add_failure "FAIL: RDS SG does not allow 3306 from Lambda SG (expected=$LAMBDA_SG_ID actual=$pairs)."
+
+# Ensure NOT world open on 3306
+world="$(aws ec2 describe-security-groups --group-ids "$RDS_SG_ID" --region "$REGION" \
+  --query "SecurityGroups[0].IpPermissions[?FromPort==\`3306\` && ToPort==\`3306\`].IpRanges[].CidrIp" \
+  --output text 2>/dev/null || echo "")"
+
+echo "$world" | grep -Eq '0\.0\.0\.0/0' \
+  && add_failure "FAIL: RDS SG allows 0.0.0.0/0 on 3306." \
+  || add_detail "PASS: RDS SG not world-open on 3306."
+
+status="PASS"; exit_code=0
+(( ${#failures[@]} > 0 )) && status="FAIL" && exit_code=2
+
+details_json="$(make_json_array "${details[@]}")"
+warnings_json="$(make_json_array "${warnings[@]}")"
+failures_json="$(make_json_array "${failures[@]}")"
+
+cat > "$OUT_JSON" <<EOF
+{
+  "schema_version": "1.0",
+  "gate": "11a_rds_sg_private",
+  "timestamp_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "region": "$(echo "$REGION" | json_escape)",
+  "inputs": {
+    "db_id": "$(echo "$DB_ID" | json_escape)",
+    "rds_sg_id": "$(echo "$RDS_SG_ID" | json_escape)",
+    "lambda_sg_id": "$(echo "$LAMBDA_SG_ID" | json_escape)"
+  },
+  "observed": { "endpoint": "$(echo "$endpoint" | json_escape)", "public": "$(echo "$pub" | json_escape)" },
+  "status": "$status",
+  "exit_code": $exit_code,
+  "details": $details_json,
+  "warnings": $warnings_json,
+  "failures": $failures_json
+}
+EOF
+
+echo "Gate 11A RDS/SG/Private: $status"
+exit "$exit_code"
+```
+
+```bash
+# run_all_gates_11a.sh
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Required env vars:
+# REGION, LAMBDA_NAME, SECRET_ARN, DB_NAME, DB_ID, RDS_SG_ID, LAMBDA_SG_ID, API_ID, STAGE_NAME
+
+REGION="${REGION:-us-east-1}"
+OUT_JSON="${OUT_JSON:-gate_result.json}"
+BADGE_TXT="${BADGE_TXT:-badge.txt}"
+PR_COMMENT_MD="${PR_COMMENT_MD:-pr_comment.md}"
+
+#Chewbacca: execute gates in order: identity+secrets, network+db, then the API.
+chmod +x ./gate_11a_lambda_secret_vpc.sh ./gate_11a_rds_sg_private.sh ./gate_11a_apigw_route_invoke.sh
+
+set +e
+OUT_JSON_1="gate_11a_lambda_secret_vpc.json" ./gate_11a_lambda_secret_vpc.sh
+rc1=$?
+OUT_JSON_2="gate_11a_rds_sg_private.json"    ./gate_11a_rds_sg_private.sh
+rc2=$?
+OUT_JSON_3="gate_11a_apigw_route_invoke.json" ./gate_11a_apigw_route_invoke.sh
+rc3=$?
+set -e
+
+overall="PASS"; exit_code=0
+if [[ "$rc1" -ne 0 || "$rc2" -ne 0 || "$rc3" -ne 0 ]]; then overall="FAIL"; exit_code=2; fi
+
+# Badge logic: FAIL => RED, PASS+warnings => YELLOW, PASS => GREEN
+warn_flag=0
+grep -q '"warnings": \[' gate_11a_lambda_secret_vpc.json && ! grep -q '"warnings": \[\]' gate_11a_lambda_secret_vpc.json && warn_flag=1 || true
+grep -q '"warnings": \[' gate_11a_rds_sg_private.json    && ! grep -q '"warnings": \[\]' gate_11a_rds_sg_private.json    && warn_flag=1 || true
+grep -q '"warnings": \[' gate_11a_apigw_route_invoke.json && ! grep -q '"warnings": \[\]' gate_11a_apigw_route_invoke.json && warn_flag=1 || true
+
+badge="GREEN"
+[[ "$overall" == "FAIL" ]] && badge="RED"
+[[ "$overall" == "PASS" && "$warn_flag" -eq 1 ]] && badge="YELLOW"
+echo "$badge" > "$BADGE_TXT"
+
+# Optional jq rollup if available
+if command -v jq >/dev/null 2>&1; then
+  jq -s '
+    {
+      schema_version:"2.0",
+      gate:"11a_all_gates",
+      timestamp_utc:(now|todate),
+      region:(env.REGION // "unknown"),
+      badge:(env.BADGE // ""),
+      status:(env.OVERALL // ""),
+      exit_code:(env.EXIT|tonumber),
+      child_gates: [
+        {name:"lambda_secret_vpc", file:"gate_11a_lambda_secret_vpc.json", exit_code:(env.RC1|tonumber)},
+        {name:"rds_sg_private", file:"gate_11a_rds_sg_private.json", exit_code:(env.RC2|tonumber)},
+        {name:"apigw_route_invoke", file:"gate_11a_apigw_route_invoke.json", exit_code:(env.RC3|tonumber)}
+      ],
+      rollup: {
+        failures: ([.[0].failures,.[1].failures,.[2].failures] | add),
+        warnings: ([.[0].warnings,.[1].warnings,.[2].warnings] | add)
+      }
+    }
+  ' gate_11a_lambda_secret_vpc.json gate_11a_rds_sg_private.json gate_11a_apigw_route_invoke.json \
+  > "$OUT_JSON" \
+  || true
+else
+  # fallback minimal JSON
+  cat > "$OUT_JSON" <<EOF
+{
+  "schema_version":"2.0",
+  "gate":"11a_all_gates",
+  "timestamp_utc":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "region":"$REGION",
+  "badge":"$badge",
+  "status":"$overall",
+  "exit_code":$exit_code,
+  "child_gates":[
+    {"name":"lambda_secret_vpc","file":"gate_11a_lambda_secret_vpc.json","exit_code":$rc1},
+    {"name":"rds_sg_private","file":"gate_11a_rds_sg_private.json","exit_code":$rc2},
+    {"name":"apigw_route_invoke","file":"gate_11a_apigw_route_invoke.json","exit_code":$rc3}
+  ]
+}
+EOF
+fi
+
+cat > "$PR_COMMENT_MD" <<EOF
+### Lab 11A Gate: **$badge** ($overall)
+
+**Child gates**
+- lambda_secret_vpc: exit \`$rc1\`
+- rds_sg_private: exit \`$rc2\`
+- apigw_route_invoke: exit \`$rc3\`
+
+**Next action**
+- If **RED**: fix the failures in the child JSON files, then rerun.
+- If **YELLOW**: it passes, but warnings mean “fragile.” Stabilize it.
+- If **GREEN**: you’re ready for 11B suffering.
+EOF
+
+echo "Lab 11A Gate complete: $badge ($overall)"
+exit "$exit_code"
+```
+
+```sql
+# lab_11a_sql.txt
+
+CREATE TABLE audit_events (
+  id VARCHAR(36) PRIMARY KEY,
+  ts_utc VARCHAR(30) NOT NULL,
+  actor VARCHAR(100) NOT NULL,
+  action VARCHAR(50) NOT NULL,
+  resource VARCHAR(200) NOT NULL,
+  note VARCHAR(500),
+  source_ip VARCHAR(60),
+  request_id VARCHAR(100)
+);
+
+# lab_11a_deliverables.txt
+
+Lab 11A deliverables (same style as Lab 1A but serverless)
+
+Students must produce:
+
+        1) RDS MySQL instance (in Default VPC)
+            PubliclyAccessible = false
+
+                aws rds describe-db-instances --db-instance-identifier "$DB_ID" \
+                  --query "DBInstances[0].PubliclyAccessible" --output text
+
+        2) DB subnet placement
+            in private subnets if available (Default VPC often has public subnets; we’ll control access via SG regardless)
+        
+        3) Security groups
+            RDS SG allows 3306 only from Lambda SG
+
+                aws ec2 describe-security-groups --group-ids "$RDS_SG_ID" \
+                  --query "SecurityGroups[0].IpPermissions[?FromPort==\`3306\` && ToPort==\`3306\`]" --output json
+        
+        4) Secrets Manager secret
+            JSON fields: username, password, host, port, dbname
+        
+        5) Lambda function (Python)
+            attached to VPC subnets + Lambda SG
+            environment variables set
+
+                aws lambda get-function-configuration --function-name "$LAMBDA_NAME" \
+                  --query "VpcConfig" --output json
+        
+        6) API Gateway
+            POST /intake integration to Lambda
+
+                aws apigatewayv2 get-routes --api-id "$API_ID" --output table
+
+        7) Database table
+            audit_events created
+        
+        8) Proof artifacts
+            CLI outputs + a successful curl that inserts a row
+
+        9) Cloudwatch Logs
+
+                aws logs describe-log-streams --log-group-name "/aws/lambda/$LAMBDA_NAME" \
+                  --order-by LastEventTime --descending --max-items 1 --output table
+        
+
+# lab_11a_walkthrough.txt
+
+Architecture
+
+API Gateway (POST /intake) → Lambda (Python) → RDS MySQL
+Secrets Manager holds DB creds.
+
+0) Set your lab variables
+
+export AWS_REGION="us-east-1"
+
+#Chewbacca: The Wookiee demands names, not “db1” like a boring droid.
+export DB_ID="chewbacca-mysql-11a"
+export DB_NAME="lab11"
+export DB_USER="admin"
+export SECRET_NAME="chewbacca-db-secret-11a"
+
+export LAMBDA_NAME="chewbacca-intake-lambda-11a"
+export API_NAME="chewbacca-intake-api-11a"
+export STAGE_NAME="prod"
+
+#Chewbacca: Your ALB days are over. Now you suffer with VPC-enabled Lambda.
+export LAMBDA_SG_NAME="chewbacca-lambda-sg-11a"
+export RDS_SG_NAME="chewbacca-rds-sg-11a"
+
+Verify region:
+
+    aws configure get region
+
+1) Identify Default VPC + subnets
+
+    #Chewbacca: Find the Wookiee’s home (default VPC).
+    export VPC_ID="$(aws ec2 describe-vpcs \
+      --filters Name=isDefault,Values=true \
+      --query "Vpcs[0].VpcId" --output text)"
+    
+    echo "VPC_ID=$VPC_ID"
+
+Get subnets in default VPC:
+
+    #Chewbacca: Subnets are like Kashyyyk tree branches—pick a few.
+    aws ec2 describe-subnets \
+      --filters Name=vpc-id,Values="$VPC_ID" \
+      --query "Subnets[].{SubnetId:SubnetId,Az:AvailabilityZone,Cidr:CidrBlock,MapPublic:MapPublicIpOnLaunch}" \
+      --output table
+
+Pick 2 subnets (prefer different AZs). Store them:
+
+    export SUBNET1="$(aws ec2 describe-subnets --filters Name=vpc-id,Values="$VPC_ID" \
+      --query "Subnets[0].SubnetId" --output text)"
+    export SUBNET2="$(aws ec2 describe-subnets --filters Name=vpc-id,Values="$VPC_ID" \
+      --query "Subnets[1].SubnetId" --output text)"
+    
+    echo "$SUBNET1 $SUBNET2"
+
+2) Create Security Groups
+2A) Lambda SG
+
+    #Chewbacca: Lambda needs a collar. Not for control — for routing.
+    export LAMBDA_SG_ID="$(aws ec2 create-security-group \
+      --group-name "$LAMBDA_SG_NAME" \
+      --description "Lambda SG for Lab 11A" \
+      --vpc-id "$VPC_ID" \
+      --query "GroupId" --output text)"
+    
+    echo "LAMBDA_SG_ID=$LAMBDA_SG_ID"
+
+2B) RDS SG
+
+    #Chewbacca: The database is the Millennium Falcon. Only trusted crew allowed.
+    export RDS_SG_ID="$(aws ec2 create-security-group \
+      --group-name "$RDS_SG_NAME" \
+      --description "RDS SG for Lab 11A" \
+      --vpc-id "$VPC_ID" \
+      --query "GroupId" --output text)"
+    
+    echo "RDS_SG_ID=$RDS_SG_ID"
+
+Allow MySQL ONLY from Lambda SG:
+
+    #Chewbacca: 3306 opens only for friends. Everyone else gets growled at and then violently humped.
+    aws ec2 authorize-security-group-ingress \
+      --group-id "$RDS_SG_ID" \
+      --ip-permissions "IpProtocol=tcp,FromPort=3306,ToPort=3306,UserIdGroupPairs=[{GroupId=$LAMBDA_SG_ID}]"
+
+Proof:
+
+    aws ec2 describe-security-groups --group-ids "$RDS_SG_ID" \
+      --query "SecurityGroups[0].IpPermissions" --output json
+
+One-command “world-open?” check:
+
+    #Chewbacca: If this prints FAIL, the Wookiee is disappointed.
+    aws ec2 describe-security-groups --group-ids "$RDS_SG_ID" \
+      --query "SecurityGroups[0].IpPermissions[?FromPort==\`3306\` && ToPort==\`3306\`].IpRanges[].CidrIp" \
+      --output text | grep -Eq '0\.0\.0\.0/0' && echo FAIL || echo PASS
+
+3) Create RDS MySQL
+
+Note: In default VPC you can still make RDS private (PubliclyAccessible=false). Do that.
+Create DB subnet group (using two subnets):
+
+    #Chewbacca: “Subnet group” = Falcon docking permissions.
+    aws rds create-db-subnet-group \
+      --db-subnet-group-name "chewbacca-dbsubnet-11a" \
+      --db-subnet-group-description "Lab 11A subnet group" \
+      --subnet-ids "$SUBNET1" "$SUBNET2"
+
+Create DB:
+
+    #Chewbacca: This is where student tears are stored.
+    aws rds create-db-instance \
+      --db-instance-identifier "$DB_ID" \
+      --engine mysql \
+      --db-instance-class db.t3.micro \
+      --allocated-storage 20 \
+      --master-username "$DB_USER" \
+      --master-user-password "TEMPORARY_PASSWORD_LIZZO_LUVS_YOU" \
+      --vpc-security-group-ids "$RDS_SG_ID" \
+      --db-subnet-group-name "chewbacca-dbsubnet-11a" \
+      --backup-retention-period 0 \
+      --no-publicly-accessible \
+      --region "$AWS_REGION"
+
+Wait until available:
+
+    aws rds wait db-instance-available --db-instance-identifier "$DB_ID" --region "$AWS_REGION"
+    echo "RDS is available."
+
+Get endpoint:
+
+    export DB_ENDPOINT="$(aws rds describe-db-instances \
+      --db-instance-identifier "$DB_ID" \
+      --query "DBInstances[0].Endpoint.Address" --output text)"
+    
+    echo "DB_ENDPOINT=$DB_ENDPOINT"
+
+Verify it’s private:
+
+#Chewbacca: “PubliclyAccessible: False” or the Wookiee rips your arm off.
+aws rds describe-db-instances --db-instance-identifier "$DB_ID" \
+  --query "DBInstances[0].PubliclyAccessible" --output text
+
+4) Create database + table (one-time)
+You need a MySQL client from somewhere that can reach the DB. For Lab 11A, easiest is:
+    CloudShell (if it can reach, depends on networking) or
+    a temporary EC2 in the VPC or
+    your own bastion/VPN setup
+
+Once connected:
+
+    CREATE DATABASE lab11;
+    USE lab11;
+    
+    CREATE TABLE audit_events (
+      id VARCHAR(36) PRIMARY KEY,
+      ts_utc VARCHAR(30) NOT NULL,
+      actor VARCHAR(100) NOT NULL,
+      action VARCHAR(50) NOT NULL,
+      resource VARCHAR(200) NOT NULL,
+      note VARCHAR(500),
+      source_ip VARCHAR(60),
+      request_id VARCHAR(100)
+    );
+
+5) Create Secrets Manager secret for DB creds
+Generate a strong password:
+
+    #Chewbacca: strong passwords make Sith cry.
+    export DB_PASS="$(aws secretsmanager get-random-password \
+      --password-length 24 \
+      --exclude-punctuation \
+      --query RandomPassword --output text)"
+
+Create secret JSON:
+
+#Chewbacca: Secrets live in Secrets Manager. Not in Terraform comments. Not in Git. Not in your brain.
+cat > db_secret.json <<EOF
+    {
+      "username": "$DB_USER",
+      "password": "$DB_PASS",
+      "host": "$DB_ENDPOINT",
+      "port": 3306,
+      "dbname": "$DB_NAME"
+    }
+    EOF
+
+Create secret:
+
+    export SECRET_ARN="$(aws secretsmanager create-secret \
+      --name "$SECRET_NAME" \
+      --secret-string file://db_secret.json \
+      --query ARN --output text)"
+    
+    echo "SECRET_ARN=$SECRET_ARN"
+
+
+Verify:
+    aws secretsmanager describe-secret --secret-id "$SECRET_ARN" --output table
+
+6) Create IAM role for Lambda
+Create trust policy:
+
+    cat > lambda_trust.json <<'EOF'
+    {
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Principal": { "Service": "lambda.amazonaws.com" },
+        "Action": "sts:AssumeRole"
+      }]
+    }
+    EOF
+
+Create role:
+
+    #Chewbacca: Give Lambda the keys it needs, not the whole ship.
+    export LAMBDA_ROLE_NAME="chewbacca-lambda-role-11a"
+    
+    export LAMBDA_ROLE_ARN="$(aws iam create-role \
+      --role-name "$LAMBDA_ROLE_NAME" \
+      --assume-role-policy-document file://lambda_trust.json \
+      --query Role.Arn --output text)"
+    
+    echo "LAMBDA_ROLE_ARN=$LAMBDA_ROLE_ARN"
+
+Attach managed policies for logging + VPC access:
+
+        aws iam attach-role-policy --role-name "$LAMBDA_ROLE_NAME" \
+          --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        
+        aws iam attach-role-policy --role-name "$LAMBDA_ROLE_NAME" \
+          --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+Add inline policy to read the secret:
+
+        cat > lambda_secret_policy.json <<EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+            "Resource": "$SECRET_ARN"
+          }]
+        }
+        EOF
+        
+        aws iam put-role-policy \
+          --role-name "$LAMBDA_ROLE_NAME" \
+          --policy-name "chewbacca-read-secret-11a" \
+          --policy-document file://lambda_secret_policy.json
+        
+
+7) Create Lambda (Python + pymysql)
+7A) Build package
+
+Create folder:
+
+        mkdir -p lambda_pkg
+        cd lambda_pkg
+
+Install pymysql into package:
+
+        #Chewbacca: pymysql is pure Python. SEIR-I mercy granted.
+        pip3 install pymysql -t .
+
+Create lambda_function.py:
+
+https://github.com/BalericaAI/armageddon/blob/main/SEIR_Foundations/lab11/lambda/lambda_function.py
+
+        cat > lambda_function.py <<'EOF'
+
+Zip it:
+
+        zip -r ../chewbacca_lambda_11a.zip . >/dev/null
+        cd ..
+
+7B) Create Lambda function
+
+        aws lambda create-function \
+          --function-name "$LAMBDA_NAME" \
+          --runtime python3.12 \
+          --handler lambda_function.lambda_handler \
+          --zip-file "fileb://chewbacca_lambda_11a.zip" \
+          --role "$LAMBDA_ROLE_ARN" \
+          --timeout 10 \
+          --memory-size 256 \
+          --environment "Variables={DB_SECRET_ARN=$SECRET_ARN,DB_NAME=$DB_NAME,DB_CONNECT_TIMEOUT=5}" \
+          --vpc-config "SubnetIds=$SUBNET1,$SUBNET2,SecurityGroupIds=$LAMBDA_SG_ID" \
+          --region "$AWS_REGION"
+
+Verify config:
+
+    #Chewbacca: If VpcConfig is empty, the Wookiee throws the console at you.
+aws lambda get-function-configuration --function-name "$LAMBDA_NAME" \
+  --query "{Runtime:Runtime,VpcConfig:VpcConfig,Env:Environment.Variables}" --output json
+
+8) Create API Gateway HTTP API + route
+
+Create API:
+
+        export API_ID="$(aws apigatewayv2 create-api \
+          --name "$API_NAME" \
+          --protocol-type HTTP \
+          --query ApiId --output text)"
+        
+        echo "API_ID=$API_ID"
+
+Create integration (Lambda proxy):
+
+        export INTEGRATION_ID="$(aws apigatewayv2 create-integration \
+          --api-id "$API_ID" \
+          --integration-type AWS_PROXY \
+          --integration-uri "arn:aws:lambda:$AWS_REGION:$account_id:function:$LAMBDA_NAME" \
+          --payload-format-version "2.0" \
+          --query IntegrationId --output text)"
+        
+        echo "INTEGRATION_ID=$INTEGRATION_ID"
+
+Create route:
+
+        aws apigatewayv2 create-route \
+          --api-id "$API_ID" \
+          --route-key "POST /intake" \
+          --target "integrations/$INTEGRATION_ID"
+
+Create stage:
+
+        aws apigatewayv2 create-stage --api-id "$API_ID" --stage-name "$STAGE_NAME" --auto-deploy
+
+Allow API Gateway to invoke Lambda:
+
+        #Chewbacca: API Gateway must be allowed to puke on the Wookiee.
+        aws lambda add-permission \
+          --function-name "$LAMBDA_NAME" \
+          --statement-id "apigw-invoke-11a" \
+          --action lambda:InvokeFunction \
+          --principal apigateway.amazonaws.com \
+          --source-arn "arn:aws:execute-api:$AWS_REGION:$account_id:$API_ID/*/*/intake"
+
+Invoke URL:
+
+        export INVOKE_URL="https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com/${STAGE_NAME}/intake"
+        echo "$INVOKE_URL"
+
+9) Test it (curl) + prove insert
+
+Invoke:
+
+        #Chewbacca: If this returns DB_WRITE_FAILED, your networking is wrong and you win Lizzo. Good. Learn it.
+        curl -sS -X POST "$INVOKE_URL" \
+          -H "content-type: application/json" \
+          -d '{"actor":"doctor.ny","action":"VIEW_PATIENT","resource":"patient/12345","note":"Viewed chart"}'
+
+
+Watch logs:
+        # Chewbacca watching you.... 
+        aws logs tail "/aws/lambda/$LAMBDA_NAME" --since 10m --follow
+
+DB proof (from your MySQL client):
+
+        SELECT * FROM audit_events ORDER BY ts_utc DESC LIMIT 5;
+
+
+
+# readme.md
+
+Why Serverless Matters (And Why You’re Learning It)
+
+One sentence to remember
+
+Serverless isn’t about avoiding servers.
+It’s about focusing on decisions that matter.
+
+If you can handle that — even when tired — you belong here.
+
+First: what “serverless” actually means (no lies)
+
+Serverless does not mean “no servers.”
+
+It means:
+
+    You don’t babysit them
+    You don’t patch them
+    You don’t size them
+    You don’t pay for them when nothing is happening
+
+You write code.
+The platform runs it only when it’s needed.
+Then it goes away.
+
+That’s it.
+
+This is not magic.
+This is operational efficiency.
+
+Why companies care about “only running code”
+
+In the old world:
+    You launched an EC2
+    It ran 24/7
+    It cost money 24/7
+    It broke at 3 a.m.
+    Someone like you got paged while you sleeping next to Lizzo
+
+In the modern world:
+    An API gets hit
+    Code runs for 120 milliseconds
+    Data is written
+    Code shuts off
+    Cost: fractions of a cent
+
+Multiply that across:
+    thousands of endpoints
+    millions of requests
+    multiple regions
+
+This is why CFOs, architects, and regulators all like serverless.
+
+Not because it’s trendy — because it reduces failure surface.
+
+Why you care (career reality)
+
+Here’s the hard truth:
+
+    Companies don’t pay engineers to keep machines warm.
+    They pay engineers to deliver outcomes safely.
+
+Serverless engineers are valued because they:
+    think in events, not boxes
+    understand identity + permissions
+    design stateless systems
+    debug distributed failures
+    prove correctness with logs, metrics, and evidence
+
+That’s not junior work.
+
+Why this lab is replacing EC2 with Lambda
+
+You already learned:
+    networking
+    security groups
+    databases
+    secrets
+    IAM
+
+Serverless forces you to prove you actually understand them.
+
+With EC2:
+    you can “log in and poke around”
+    mistakes are hidden
+    bad habits survive
+
+With Lambda:
+    if IAM is wrong → instant failure
+    if networking is wrong → instant failure
+    if secrets are wrong → instant failure
+
+There is nowhere to hide.
+
+This is why it feels harder.
+That doesn’t mean you’re failing.
+It means the platform is honest.
+
+“But why not just run servers? I understand servers.”
+
+Because the industry moved.
+
+Not everywhere — but in high-value places:
+    healthcare
+    finance
+    security tooling
+    internal platforms
+    audit pipelines
+    event ingestion
+    control planes
+
+Serverless shows up inside big systems.
+
+If you can’t work with it, you get boxed into:
+    legacy maintenance roles
+    slow-moving teams
+    lower ceilings
+
+That’s not a moral judgment.
+That’s market behavior.
+
+How this helps you in interviews (directly)
+
+When you say:
+
+“I built an API Gateway → Lambda → RDS pipeline using Secrets Manager, VPC networking, and IAM, and I verified it with CLI evidence.”
+
+Interviewers hear:
+    “This person understands modern AWS”
+    “This person won’t leak credentials”
+    “This person can debug production issues”
+    “This person won’t need hand-holding”
+
+You don’t need to feel confident.
+You need to be correct.
+
+Serverless rewards correctness.
+
+For the 2 a.m. doubt spiral
+
+If you’re thinking:
+
+  “This is too much. Maybe I’m not cut out for this.”
+
+Pause.
+
+You are not failing because:
+    you’re slow
+    you’re confused
+    things break
+
+You are learning a system where:
+    mistakes are surfaced immediately
+    responsibility is explicit
+    evidence matters more than vibes
+
+That’s what professionals work in.
+
+Waffle House is honest work.
+So is cloud engineering.
+
+But one of these:
+    compounds over time
+    gives you leverage
+    lets you move globally
+    pays you for judgment, not hours
+
+You’re here because you chose the harder path.
+
+That doesn’t mean you’re weak.
+It means you’re early.
+
+### Lambda
+
+# handler.py
+
+```python
+# Don't forget, you have to upload this as a zip file. 
+
+import json
+import os
+import boto3
+import uuid
+import datetime
+
+secrets = boto3.client("secretsmanager")
+
+def get_db_secret(secret_arn: str) -> dict:
+    resp = secrets.get_secret_value(SecretId=secret_arn)
+    return json.loads(resp["SecretString"])
+
+def lambda_handler(event, context):
+    # 1) Parse input
+    body = json.loads(event.get("body") or "{}")
+    actor = body.get("actor", "unknown")
+    action = body.get("action", "unknown")
+    resource = body.get("resource", "unknown")
+    note = body.get("note", "")
+
+    # 2) Metadata
+    event_id = str(uuid.uuid4())
+    ts = datetime.datetime.utcnow().isoformat() + "Z"
+    request_id = getattr(context, "aws_request_id", "no-request-id")
+    source_ip = (event.get("requestContext", {})
+                    .get("http", {})
+                    .get("sourceIp", "unknown"))
+
+    # 3) Fetch DB creds from Secrets Manager
+    secret_arn = os.environ["DB_SECRET_ARN"]
+    db = get_db_secret(secret_arn)
+
+    # 4) Connect to RDS and insert row
+    # NOTE: Use psycopg2 for Postgres OR pymysql for MySQL.
+    # We will wire this up in the next step (layer/package + SQL).
+    #
+    # Example insert:
+    # INSERT INTO audit_events(id, ts, actor, action, resource, note, source_ip, request_id)
+    # VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+
+    # Placeholder so it runs before we add driver:
+    # (Next step we'll add actual DB connection code.)
+    return {
+        "statusCode": 200,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps({
+            "ok": True,
+            "event_id": event_id,
+            "ts": ts,
+            "request_id": request_id,
+            "actor": actor,
+            "action": action,
+            "resource": resource
+        })
+    }
+```
+
+# lambda_function.py
+
+```python
+import json
+import os
+import uuid
+import datetime
+import boto3
+import pymysql
+
+secrets = boto3.client("secretsmanager")
+
+def get_secret(secret_arn: str) -> dict:
+    resp = secrets.get_secret_value(SecretId=secret_arn)
+    return json.loads(resp["SecretString"])
+
+def resp(status_code: int, body: dict):
+    return {
+        "statusCode": status_code,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps(body)
+    }
+
+def lambda_handler(event, context):
+    # ---- Parse request body ----
+    raw_body = event.get("body") or "{}"
+    try:
+        body = json.loads(raw_body)
+    except Exception:
+        return resp(400, {"ok": False, "error": "Invalid JSON body"})
+
+    actor = str(body.get("actor", "unknown"))[:100]
+    action = str(body.get("action", "unknown"))[:50]
+    resource = str(body.get("resource", "unknown"))[:200]
+    note = str(body.get("note", ""))[:500]
+
+    # ---- Metadata ----
+    event_id = str(uuid.uuid4())
+    ts_utc = datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    request_id = getattr(context, "aws_request_id", "no-request-id")
+
+    # HTTP API v2 shape: event.requestContext.http.sourceIp
+    source_ip = (
+        (event.get("requestContext") or {})
+        .get("http", {})
+        .get("sourceIp", "unknown")
+    )[:60]
+
+    # ---- Get DB creds from Secrets Manager ----
+    secret_arn = os.environ["DB_SECRET_ARN"]
+    db = get_secret(secret_arn)
+
+    host = db["host"]
+    port = int(db.get("port", 3306))
+    user = db["username"]
+    password = db["password"]
+
+    dbname = os.environ.get("DB_NAME") or db.get("dbname")
+    if not dbname:
+        return resp(500, {"ok": False, "error": "DB_NAME not set and dbname missing in secret"})
+
+    timeout = int(os.environ.get("DB_CONNECT_TIMEOUT", "5"))
+
+    # ---- Insert into DB ----
+    conn = None
+    try:
+        conn = pymysql.connect(
+            host=host,
+            user=user,
+            password=password,
+            database=dbname,
+            port=port,
+            connect_timeout=timeout,
+            read_timeout=timeout,
+            write_timeout=timeout,
+            autocommit=True,
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO audit_events
+                  (id, ts_utc, actor, action, resource, note, source_ip, request_id)
+                VALUES
+                  (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (event_id, ts_utc, actor, action, resource, note, source_ip, request_id),
+            )
+
+        return resp(200, {
+            "ok": True,
+            "event_id": event_id,
+            "ts_utc": ts_utc,
+            "request_id": request_id
+        })
+
+    except pymysql.MySQLError as e:
+        # Don't leak creds or internal topology. Return minimal error.
+        return resp(502, {
+            "ok": False,
+            "error": "DB_WRITE_FAILED",
+            "request_id": request_id
+        })
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+```
+
+What does this lab entail. You are Solutions architect explaining what you are  building
+to a 10 year old child who has no idea what these things are. Tell them what it is and
+give a interview ready summary of what you are building for a hiring manager.
