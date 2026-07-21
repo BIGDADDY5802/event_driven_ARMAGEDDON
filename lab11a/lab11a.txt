@@ -1234,7 +1234,3 @@ def lambda_handler(event, context):
             except Exception:
                 pass
 ```
-
-What does this lab entail. You are Solutions architect explaining what you are  building
-to a 10 year old child who has no idea what these things are. Tell them what it is and
-give a interview ready summary of what you are building for a hiring manager.

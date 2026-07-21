@@ -229,11 +229,11 @@ terraform destroy
 
 ## Further reading
 
-- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — full deployment chronology: every
+- [`docs/RUNBOOK.md`](lab11a/lab11adocumentation.md) — full deployment chronology: every
   failure hit, its root cause, and the fix, in order
 - [`docs/gate-evidence-redacted.md`](docs/gate-evidence-redacted.md) —
   final gate JSON output, redacted for public sharing
-- [`docs/workflow-redacted.md`](docs/workflow-redacted.md) — the complete
+- [`docs/workflow-redacted.md`](lab11a/lab11a.txt) — the complete
   redacted command/output log behind this build
 
 Part of the **dawgs-armageddon** cloud engineering lab series.
