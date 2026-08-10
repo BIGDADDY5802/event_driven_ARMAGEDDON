@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is gitignored.
+
+aws_region   = "us-east-1"
+project_name = "chewbacca-11a"
+environment  = "lab"
+
+db_name             = "lab11"
+db_master_username  = "admin"
+db_instance_class   = "db.t3.micro"
+
+lambda_function_name = "chewbacca-intake-lambda-11a"
+api_name              = "chewbacca-intake-api-11a"
+stage_name            = "prod"
+
+tags = {
+  Project   = "dawgs-armageddon"
+  Lab       = "11A-chewbacca"
+  Track     = "serverless"
+  ManagedBy = "terraform"
+  Owner     = "BIGDADDY5802"
+}

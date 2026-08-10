@@ -1,0 +1,26 @@
+# ============================================================
+# terraform.tfvars.example — Fill in YOUR 11A values
+#
+# Copy this to terraform.tfvars, replace the placeholders,
+# and never commit terraform.tfvars to git if it ever holds
+# anything sensitive.
+#
+# Where to find each value:
+#   api_id       → API Gateway console, or: aws apigatewayv2 get-apis
+#   rds_sg_id    → RDS instance → Connectivity → VPC security groups
+#   lambda_sg_id → Lambda → Configuration → VPC → Security groups
+#   secret_name  → Secrets Manager console
+# ============================================================
+
+region       = "us-east-1"
+lambda_name  = "chewbacca-intake-lambda-11a"
+api_id       = "abc123xyz"                # REPLACE
+stage_name   = "prod"
+route_path   = "/intake"
+db_id        = "chewbacca-mysql-11a"
+rds_sg_id    = "sg-xxxxxxxxxxxxxxxxx"     # REPLACE
+lambda_sg_id = "sg-yyyyyyyyyyyyyyyyy"     # REPLACE
+secret_name  = "chewbacca-db-secret-11a"  # REPLACE (name or ARN)
+
+# Optional: get emailed when the smoke detectors go off
+# alarm_email = "firstofmyname5802@outlook.com"

@@ -1,0 +1,1 @@
+{"statusCode": 200, "body": "{\"message\": \"WAF Bedrock Analyzer run completed.\", \"raw_log_events_read\": 5, \"events_written\": 0, \"events_skipped_duplicate\": 5, \"events_skipped_malformed\": 0, \"bedrock_summaries_generated\": 0, \"bedrock_failures\": 0}"}

@@ -1,0 +1,1 @@
+{"statusCode": 200, "body": "{\"message\": \"Threat correlation completed.\", \"finding_created\": true, \"finding_id\": \"ea5dca29-4e34-4bfa-80b0-e8e907c65250\", \"events_correlated\": 5, \"severity\": \"MEDIUM\", \"risk_score\": 30, \"primary_source_ip\": \"174.219.218.21\", \"bedrock_report_generated\": true}"}
