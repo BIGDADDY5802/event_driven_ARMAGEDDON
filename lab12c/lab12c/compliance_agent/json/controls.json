@@ -1,0 +1,208 @@
+{
+  "controls": [
+
+    {
+      "control_id": "CTRL-001",
+
+      "title": "AWS WAF Protection",
+
+      "description": "API Gateway must be protected by AWS WAF.",
+
+      "category": "Network Security",
+
+      "severity": "High",
+
+      "service": "AWS WAF",
+
+      "resource_type": "WebACL",
+
+      "evidence_sources": [
+
+        "waf-events"
+
+      ],
+
+      "frameworks": [
+
+        {
+          "framework": "NIST CSF 2.0",
+          "control": "PR.PS-1"
+        },
+
+        {
+          "framework": "CIS Controls v8",
+          "control": "13.1"
+        },
+
+        {
+          "framework": "PCI DSS 4.0",
+          "control": "6.4"
+        },
+
+        {
+          "framework": "ISO 27001",
+          "control": "A.8.20"
+        }
+
+      ],
+
+      "validation": {
+
+        "type": "table_exists",
+
+        "table": "waf-events"
+
+      },
+
+      "bedrock_prompt":
+
+      "Explain whether evidence demonstrates that AWS WAF is actively protecting the application."
+
+    },
+
+    {
+      "control_id": "CTRL-002",
+
+      "title": "Threat Correlation",
+
+      "description": "Security events should be correlated to identify attack campaigns.",
+
+      "category": "Detection",
+
+      "severity": "Medium",
+
+      "service": "Threat Correlation Agent",
+
+      "resource_type": "Lambda",
+
+      "evidence_sources": [
+
+        "waf-correlation-findings"
+
+      ],
+
+      "frameworks": [
+
+        {
+          "framework": "NIST CSF 2.0",
+          "control": "DE.AE-03"
+        },
+
+        {
+          "framework": "CIS Controls v8",
+          "control": "13.7"
+        }
+
+      ],
+
+      "validation": {
+
+        "type": "table_exists",
+
+        "table": "waf-correlation-findings"
+
+      },
+
+      "bedrock_prompt":
+
+      "Summarize whether correlated findings demonstrate effective detection capability."
+
+    },
+
+    {
+      "control_id": "CTRL-003",
+
+      "title": "Incident Response",
+
+      "description": "Security incidents should be tracked and managed.",
+
+      "category": "Incident Response",
+
+      "severity": "High",
+
+      "service": "SOAR Response Agent",
+
+      "resource_type": "Lambda",
+
+      "evidence_sources": [
+
+        "security-incidents"
+
+      ],
+
+      "frameworks": [
+
+        {
+          "framework": "NIST CSF 2.0",
+          "control": "RS.MA-01"
+        },
+
+        {
+          "framework": "CIS Controls v8",
+          "control": "17.3"
+        }
+
+      ],
+
+      "validation": {
+
+        "type": "table_exists",
+
+        "table": "security-incidents"
+
+      },
+
+      "bedrock_prompt":
+
+      "Determine whether incident response evidence supports the operation of the response process."
+
+    },
+
+    {
+      "control_id": "CTRL-004",
+
+      "title": "Executive Reporting",
+
+      "description": "Security reporting should be available for leadership.",
+
+      "category": "Governance",
+
+      "severity": "Medium",
+
+      "service": "Executive Dashboard Agent",
+
+      "resource_type": "Lambda",
+
+      "evidence_sources": [
+
+        "executive-security-reports"
+
+      ],
+
+      "frameworks": [
+
+        {
+          "framework": "NIST CSF 2.0",
+          "control": "GV.OV-01"
+        }
+
+      ],
+
+      "validation": {
+
+        "type": "s3_prefix",
+
+        "bucket": "REPORT_BUCKET",
+
+        "prefix": "executive-reports"
+
+      },
+
+      "bedrock_prompt":
+
+      "Explain whether executive reporting demonstrates governance and security visibility."
+
+    }
+
+  ]
+}

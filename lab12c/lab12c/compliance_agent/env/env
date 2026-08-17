@@ -1,0 +1,14 @@
+CONTROLS_FILE=/var/task/controls.json
+
+COMPLIANCE_EVIDENCE_TABLE=compliance-evidence
+
+REPORT_BUCKET=chewbacca-s3-123456789012
+REPORT_PREFIX=compliance-reports
+
+COMPLIANCE_FRAMEWORKS=NIST CSF 2.0,CIS Controls v8
+
+BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0
+ENABLE_BEDROCK=true
+
+ORGANIZATION_NAME=SEIR Cloud Security
+REPORT_TITLE=Compliance Evidence Report
